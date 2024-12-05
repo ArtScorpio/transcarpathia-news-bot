@@ -9,6 +9,20 @@ from datetime import datetime
 import pytz
 import json
 
+# Додайте цей код в bot.py
+def test_post(self):
+    """Тестова публікація для перевірки роботи бота"""
+    try:
+        test_message = "🔄 Тестове повідомлення. Перевірка роботи бота."
+        self.updater.bot.send_message(
+            chat_id=self.channel_id,
+            text=test_message,
+            parse_mode='HTML'
+        )
+        print("Тестове повідомлення відправлено успішно!")
+    except Exception as e:
+        print(f"Помилка при відправці: {e}")
+
 # Імпортуємо налаштування
 from config import TOKEN, CHANNEL_ID, NEWS_SOURCES, POSTING_HOURS, POST_INTERVAL
 
