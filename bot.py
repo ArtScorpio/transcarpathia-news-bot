@@ -1,115 +1,192 @@
 import logging
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import TOKEN
+import requests
+from bs4 import BeautifulSoup
+import schedule
+import time
+from datetime import datetime
+import pytz
+import json
 
-# Налаштування логування для відслідковування помилок
+# Імпортуємо налаштування
+from config import TOKEN, CHANNEL_ID, NEWS_SOURCES, POSTING_HOURS, POST_INTERVAL
+
+# Налаштування логування
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    filename='bot_log.txt'
 )
 logger = logging.getLogger(__name__)
 
-def start(update, context):
-    """Функція для команди /start"""
-    welcome_text = (
-        "🏔 Вітаємо у боті Закарпатських новин!\n\n"
-        "Виберіть опцію з меню нижче:"
-    )
-    
-    # Створюємо кнопки для головного меню
-    keyboard = [
-        [
-            InlineKeyboardButton("📰 Останні новини", callback_data='news'),
-            InlineKeyboardButton("🌤 Погода", callback_data='weather')
-        ],
-        [InlineKeyboardButton("ℹ️ Про бота", callback_data='about')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    update.message.reply_text(welcome_text, reply_markup=reply_markup)
+class NewsBot:
+    def __init__(self, token, channel_id):
+        """Ініціалізація бота"""
+        self.updater = Updater(token=token, use_context=True)
+        self.channel_id = channel_id
+        self.news_sources = NEWS_SOURCES
+        self.posted_news = self.load_posted_news()
+        
+        # Додавання обробників команд
+        dp = self.updater.dispatcher
+        dp.add_handler(CommandHandler("start", self.start))
+        dp.add_handler(CommandHandler("help", self.help))
+        dp.add_handler(CommandHandler("status", self.status))
+        dp.add_handler(CallbackQueryHandler(self.button))
+        dp.add_error_handler(self.error)
 
-def help_command(update, context):
-    """Функція для команди /help"""
-    help_text = (
-        "Доступні команди:\n"
-        "/start - Запустити бота\n"
-        "/news - Останні новини\n"
-        "/weather - Погода в Закарпатті\n"
-        "/help - Показати це повідомлення"
-    )
-    update.message.reply_text(help_text)
+    def load_posted_news(self):
+        """Завантаження історії опублікованих новин"""
+        try:
+            with open('posted_news.json', 'r', encoding='utf-8') as file:
+                return set(json.load(file))
+        except FileNotFoundError:
+            return set()
 
-def news(update, context):
-    """Функція для отримання новин"""
-    news_text = (
-        "📰 Останні новини Закарпаття:\n\n"
-        "1. В Ужгороді відкрили нову пішохідну зону\n"
-        "2. На Рахівщині відбудеться фестиваль\n"
-        "3. У Мукачеві модернізували лікарню"
-    )
-    update.message.reply_text(news_text)
+    def save_posted_news(self):
+        """Збереження історії опублікованих новин"""
+        with open('posted_news.json', 'w', encoding='utf-8') as file:
+            json.dump(list(self.posted_news), file)
 
-def weather(update, context):
-    """Функція для отримання погоди"""
-    weather_text = (
-        "🌤 Погода в Закарпатті:\n\n"
-        "Ужгород: +20°C, сонячно\n"
-        "Мукачево: +19°C, хмарно\n"
-        "Хуст: +18°C, дощ"
-    )
-    update.message.reply_text(weather_text)
-
-def button(update, context):
-    """Обробник натискань на кнопки"""
-    query = update.callback_query
-    query.answer()  # Відповідаємо на callback
-
-    # Обробляємо різні кнопки
-    if query.data == 'news':
-        query.edit_message_text(text="📰 Останні новини Закарпаття...")
-        # Тут можна додати функцію отримання реальних новин
-    elif query.data == 'weather':
-        query.edit_message_text(text="🌤 Завантажую погоду...")
-        # Тут можна додати функцію отримання реальної погоди
-    elif query.data == 'about':
-        about_text = (
-            "ℹ️ Бот для отримання новин Закарпаття\n"
-            "Версія: 1.0\n"
-            "Створено: 2024"
+    def start(self, update, context):
+        """Обробка команди /start"""
+        keyboard = [
+            [InlineKeyboardButton("📰 Останні новини", callback_data='latest')],
+            [InlineKeyboardButton("ℹ️ Статус", callback_data='status')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text(
+            'Вітаю! Я бот для публікації новин Закарпаття.',
+            reply_markup=reply_markup
         )
-        query.edit_message_text(text=about_text)
 
-def error(update, context):
-    """Функція для логування помилок"""
-    logger.warning(f'Update {update} caused error {context.error}')
+    def help(self, update, context):
+        """Обробка команди /help"""
+        help_text = (
+            "Доступні команди:\n"
+            "/start - Запустити бота\n"
+            "/status - Перевірити статус бота\n"
+            "/help - Показати це повідомлення"
+        )
+        update.message.reply_text(help_text)
+
+    def status(self, update, context):
+        """Обробка команди /status"""
+        status_text = (
+            f"📊 Статус бота:\n"
+            f"Опубліковано новин: {len(self.posted_news)}\n"
+            f"Активні джерела: {len(self.news_sources)}\n"
+            f"Час роботи: {self.get_uptime()}"
+        )
+        update.message.reply_text(status_text)
+
+    def button(self, update, context):
+        """Обробка натискань кнопок"""
+        query = update.callback_query
+        query.answer()
+        
+        if query.data == 'latest':
+            self.show_latest_news(query)
+        elif query.data == 'status':
+            self.show_status(query)
+
+    def error(self, update, context):
+        """Обробка помилок"""
+        logger.warning(f'Update {update} caused error {context.error}')
+
+    def get_news_from_source(self, source_name, url):
+        """Отримання новин з вказаного джерела"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            news_items = []
+
+            # Парсинг в залежності від джерела
+            if 'zakarpattya.net.ua' in url:
+                news_blocks = soup.find_all('div', class_='news-title')
+                for block in news_blocks[:5]:
+                    link = block.find('a')
+                    if link and link.get('href'):
+                        title = link.text.strip()
+                        news_url = link['href']
+                        if news_url not in self.posted_news:
+                            news_items.append({
+                                'title': title,
+                                'url': news_url,
+                                'source': source_name
+                            })
+            # Додайте парсинг для інших джерел...
+
+            return news_items
+        except Exception as e:
+            logger.error(f"Помилка при отриманні новин з {source_name}: {e}")
+            return []
+
+    def format_news_post(self, news):
+        """Форматування новини для публікації"""
+        return f"""📰 {news['title']}
+
+🔍 Джерело: {news['source']}
+👉 {news['url']}
+
+#новини #закарпаття #новиниЗакарпаття"""
+
+    def post_news(self):
+        """Публікація новин у канал"""
+        all_news = []
+        for source_name, url in self.news_sources.items():
+            news_items = self.get_news_from_source(source_name, url)
+            all_news.extend(news_items)
+
+        for news in all_news:
+            if news['url'] not in self.posted_news:
+                try:
+                    formatted_post = self.format_news_post(news)
+                    self.updater.bot.send_message(
+                        chat_id=self.channel_id,
+                        text=formatted_post,
+                        parse_mode='HTML',
+                        disable_web_page_preview=False
+                    )
+                    self.posted_news.add(news['url'])
+                    self.save_posted_news()
+                    time.sleep(POST_INTERVAL)
+                except Exception as e:
+                    logger.error(f"Помилка при публікації новини: {e}")
+
+    def schedule_news(self):
+        """Планування публікації новин"""
+        for hour in POSTING_HOURS:
+            schedule.every().day.at(f"{hour:02d}:00").do(self.post_news)
+
+    def get_uptime(self):
+        """Отримання часу роботи бота"""
+        with open('/proc/uptime', 'r') as f:
+            uptime_seconds = float(f.readline().split()[0])
+        return str(datetime.timedelta(seconds=uptime_seconds))
+
+    def run(self):
+        """Запуск бота"""
+        self.schedule_news()
+        logger.info("Бот запущений. Чекаю на розклад публікацій...")
+        print("Бот запущений. Чекаю на розклад публікацій...")
+        
+        try:
+            while True:
+                schedule.run_pending()
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Бот зупинений користувачем")
+            print("Бот зупинений користувачем")
 
 def main():
-    """Основна функція для запуску бота"""
-    # Створюємо об'єкт updater та передаємо йому токен бота
-    updater = Updater(TOKEN, use_context=True)
-
-    # Отримуємо диспетчер для реєстрації обробників
-    dp = updater.dispatcher
-
-    # Реєструємо обробники команд
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_command))
-    dp.add_handler(CommandHandler("news", news))
-    dp.add_handler(CommandHandler("weather", weather))
-
-    # Реєструємо обробник кнопок
-    dp.add_handler(CallbackQueryHandler(button))
-
-    # Реєструємо обробник помилок
-    dp.add_error_handler(error)
-
-    # Запускаємо бота
-    updater.start_polling()
-    print("Бот запущений...")
-
-    # Тримаємо бота запущеним до переривання
-    updater.idle()
+    """Головна функція"""
+    bot = NewsBot(TOKEN, CHANNEL_ID)
+    bot.run()
 
 if __name__ == '__main__':
     main()
