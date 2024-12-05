@@ -1,2 +1,15 @@
-# transcarpathia-news-bot
-Telegram bot for Transcarpathian news
+# Transcarpathia News Bot
+
+Telegram бот для автоматичної публікації новин Закарпаття.
+
+## Функціонал
+- Автоматичний збір новин з регіональних сайтів
+- Публікація новин у Telegram канал
+- Розклад публікацій кожні 2 години
+- Уникнення дублювання новин
+- Форматування постів з хештегами
+
+## Встановлення
+1. Клонуйте репозиторій:
+```bash
+git clone https://github.com/ArtScorpio/transcarpathia-news-bot.git
